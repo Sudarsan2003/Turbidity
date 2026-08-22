@@ -1,0 +1,7 @@
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10.0
+
+# Optional -- only needed on a Raspberry Pi to use the Pi camera instead
+# of a USB/laptop webcam. Leave commented out on a laptop.
+# picamera2
