@@ -56,8 +56,17 @@ class Camera:
     def read_frame(self):
         """Return a BGR uint8 frame resized to (width, height)."""
         if self.backend == "picam":
-            frame = self._picam.capture_array()  # RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            # NOTE: picamera2 has a well-known naming quirk -- requesting
+            # format="RGB888" (set in __init__) actually returns the array
+            # in BGR channel order already, which is exactly what OpenCV
+            # wants. Do NOT run this through cv2.cvtColor(..., RGB2BGR);
+            # doing so silently swaps the R/B channels back the wrong way.
+            # (See picamera2's own request.py FORMAT_TABLE, which maps
+            # "RGB888" -> "BGR".) This was invisible while testing on the
+            # black/white checkerboard/stripe patterns (R=G=B everywhere)
+            # but will show up as swapped colors once real fluid/particle
+            # images are captured, so fix it before the Pi bring-up.
+            frame = self._picam.capture_array()
         else:
             ok, frame = self._cap.read()
             if not ok:
