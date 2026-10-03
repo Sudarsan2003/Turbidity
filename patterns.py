@@ -1,10 +1,9 @@
-"""
-patterns.py
-Generates the projected image patterns referenced on the project slide
-(Fig 1b: "Image pattern template slide with pre-designed pattern").
-Each function returns a BGR uint8 numpy array. A dispatcher + a __main__
-block regenerate the reference PNGs under assets/.
-"""
+\
+\
+\
+\
+\
+\
 
 import numpy as np
 import cv2
@@ -20,10 +19,8 @@ PATTERN_NAMES = {
     "random": "Random Binary",
 }
 
-
 def _blank(w, h):
     return np.full((h, w, 3), 255, dtype=np.uint8)
-
 
 def generate_checkerboard(w, h, feat=24):
     img = _blank(w, h)
@@ -33,20 +30,17 @@ def generate_checkerboard(w, h, feat=24):
                 cv2.rectangle(img, (x, y), (x + feat, y + feat), (0, 0, 0), -1)
     return img
 
-
 def generate_vstripes(w, h, feat=24):
     img = _blank(w, h)
     for x in range(0, w, feat * 2):
         cv2.rectangle(img, (x, 0), (x + feat, h), (0, 0, 0), -1)
     return img
 
-
 def generate_hstripes(w, h, feat=24):
     img = _blank(w, h)
     for y in range(0, h, feat * 2):
         cv2.rectangle(img, (0, y), (w, y + feat), (0, 0, 0), -1)
     return img
-
 
 def generate_dots(w, h, feat=24):
     img = _blank(w, h)
@@ -55,7 +49,6 @@ def generate_dots(w, h, feat=24):
         for x in range(feat, w, feat):
             cv2.circle(img, (x, y), r, (0, 0, 0), -1)
     return img
-
 
 def generate_circles(w, h, feat=24):
     img = _blank(w, h)
@@ -67,7 +60,6 @@ def generate_circles(w, h, feat=24):
         r += int(feat * 1.4)
     return img
 
-
 def generate_random(w, h, feat=24, seed=None):
     rng = np.random.default_rng(seed)
     block = max(2, feat // 3)
@@ -78,7 +70,6 @@ def generate_random(w, h, feat=24, seed=None):
     img = cv2.cvtColor(big, cv2.COLOR_GRAY2BGR)
     return img
 
-
 _DISPATCH = {
     "checker": generate_checkerboard,
     "vstripe": generate_vstripes,
@@ -88,15 +79,13 @@ _DISPATCH = {
     "random": generate_random,
 }
 
-
 def generate_pattern(pattern_type, w=480, h=360, feat=24):
     if pattern_type not in _DISPATCH:
         raise ValueError(f"Unknown pattern type: {pattern_type}")
     return _DISPATCH[pattern_type](w, h, feat)
 
-
 if __name__ == "__main__":
-    # Regenerate the reference pattern assets mentioned in the project layout.
+
     import os
     out_dir = os.path.join(os.path.dirname(__file__), "assets")
     os.makedirs(out_dir, exist_ok=True)

@@ -1,10 +1,9 @@
-"""
-blur_matrix.py
-Implements Fig 2 from the slides: divide the imager frame into an m x n grid
-of kernels, compute a per-kernel sharpness value, and produce the blur
-matrix (and a normalized blur-ratio matrix used for the heatmap and for
-scattering-angle conversion).
-"""
+\
+\
+\
+\
+\
+\
 
 import numpy as np
 import cv2
@@ -17,19 +16,23 @@ _METRIC_FNS = {
     "fft": fft_high_freq_energy,
 }
 
+def compute_blur_matrix(img, grid_cols=12, grid_rows=None, method="laplacian"):
+\
+\
+\
+\
+\
+\
+\
 
-def compute_blur_matrix(img, grid_cols=12, method="laplacian"):
-    """
-    Split the image into grid_cols columns (rows chosen to keep cells
-    roughly square, matching the imager's p x q aspect ratio) and compute
-    a per-cell sharpness score.
-
-    Returns: matrix (2D numpy array, rows x cols) of raw sharpness values.
-    Higher value = sharper cell.
-    """
     gray = to_gray(img)
     h, w = gray.shape
-    grid_rows = max(2, round(grid_cols * h / w))
+    if grid_rows is None:
+        grid_rows = max(2, round(grid_cols * h / w))
+    else:
+        grid_rows = max(2, int(grid_rows))
+    grid_cols = max(2, int(grid_cols))
+
     cell_w = w / grid_cols
     cell_h = h / grid_rows
 
@@ -47,43 +50,139 @@ def compute_blur_matrix(img, grid_cols=12, method="laplacian"):
 
     return matrix
 
+def compute_all_blur_matrices(img, grid_cols=12, grid_rows=None):
+\
+\
+\
+
+    return {
+        m: compute_blur_matrix(img, grid_cols=grid_cols, grid_rows=grid_rows, method=m)
+        for m in ("laplacian", "tenengrad", "fft")
+    }
+
+def matrix_stats(mat):
+\
+\
+\
+
+    if mat is None or mat.size == 0:
+        return {"mean": 0.0, "min": 0.0, "max": 0.0, "std": 0.0, "median": 0.0}
+    return {
+        "mean": float(np.mean(mat)),
+        "min": float(np.min(mat)),
+        "max": float(np.max(mat)),
+        "std": float(np.std(mat)),
+        "median": float(np.median(mat)),
+    }
+
+def compute_scattering_angle_matrix(blur_mat, ref_mat=None, mode="ratio"):
+\
+\
+\
+\
+\
+\
+\
+\
+\
+\
+\
+\
+\
+\
+
+    if ref_mat is not None and mode != "within":
+        if blur_mat.shape != ref_mat.shape:
+
+            ref_mat_resized = cv2.resize(ref_mat, (blur_mat.shape[1], blur_mat.shape[0]),
+                                         interpolation=cv2.INTER_LINEAR)
+        else:
+            ref_mat_resized = ref_mat
+        ratio = np.clip(1.0 - blur_mat / np.maximum(ref_mat_resized, 1e-9), 0.0, 1.0)
+    else:
+        ratio = to_blur_ratio(blur_mat)
+
+    angle_deg = np.degrees(np.arctan(ratio))
+    return angle_deg
+
+def draw_grid_overlay(img, grid_cols=12, grid_rows=None, color=(0, 255, 255), thickness=1):
+\
+\
+
+    out = img.copy()
+    h, w = out.shape[:2]
+    if grid_rows is None:
+        grid_rows = max(2, round(grid_cols * h / w))
+    cell_w = w / grid_cols
+    cell_h = h / grid_rows
+
+    for c in range(1, grid_cols):
+        x = int(c * cell_w)
+        cv2.line(out, (x, 0), (x, h), color, thickness)
+    for r in range(1, grid_rows):
+        y = int(r * cell_h)
+        cv2.line(out, (0, y), (w, y), color, thickness)
+
+    return out
 
 def to_blur_ratio(matrix):
-    """
-    Normalize a raw sharpness matrix to a 0..1 "blur ratio" where
-    0 = sharpest cell in this frame, 1 = blurriest cell in this frame.
-    This is a within-frame normalization (relative), not an absolute
-    calibrated blur value.
-    """
+\
+\
+\
+\
+\
+
     vmin, vmax = matrix.min(), matrix.max()
     rng = (vmax - vmin) or 1.0
     sharpness_norm = (matrix - vmin) / rng
     return 1.0 - sharpness_norm
 
+def matrix_to_heatmap(matrix, vmin=None, vmax=None, cmap=cv2.COLORMAP_JET,
+                      out_w=480, out_h=360, annotate=False):
+\
+\
 
-def matrix_to_heatmap(ratio_matrix, out_w=480, out_h=360, annotate=False):
-    """
-    Render a 0..1 matrix (0=sharp/blue, 1=blurry/red) as a BGR heatmap
-    image, upscaled to (out_w, out_h) with cell gridlines.
-    """
-    rows, cols = ratio_matrix.shape
-    # Map 0..1 -> OpenCV COLORMAP_JET-like blue->red via built-in colormap.
-    scaled = np.clip(ratio_matrix * 255, 0, 255).astype(np.uint8)
-    small_color = cv2.applyColorMap(scaled, cv2.COLORMAP_JET)
+    rows, cols = matrix.shape
+    if vmin is None:
+        vmin = float(matrix.min())
+    if vmax is None:
+        vmax = float(matrix.max())
+    span = (vmax - vmin) if (vmax - vmin) > 1e-9 else 1.0
+
+    norm = np.clip((matrix - vmin) / span, 0.0, 1.0)
+    scaled = (norm * 255).astype(np.uint8)
+    small_color = cv2.applyColorMap(scaled, cmap)
     heat = cv2.resize(small_color, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
 
+    cell_w = out_w / cols
+    cell_h = out_h / rows
+    for c in range(cols + 1):
+        x = int(c * cell_w)
+        cv2.line(heat, (x, 0), (x, out_h), (30, 30, 30), 1)
+    for r in range(rows + 1):
+        y = int(r * cell_h)
+        cv2.line(heat, (0, y), (out_w, y), (30, 30, 30), 1)
+
     if annotate and rows * cols <= 140:
-        cell_w, cell_h = out_w / cols, out_h / rows
         for r in range(rows):
             for c in range(cols):
-                val = ratio_matrix[r, c]
-                txt = f"{val:.2f}"
+                val = matrix[r, c]
+                txt = f"{val:.1f}" if abs(val) < 1000 else f"{val:.0f}"
                 x = int(c * cell_w + cell_w * 0.15)
                 y = int(r * cell_h + cell_h * 0.6)
                 cv2.putText(heat, txt, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.32, (0, 0, 0), 1, cv2.LINE_AA)
+                            0.28, (0, 0, 0), 1, cv2.LINE_AA)
     return heat
 
+def save_matrix_csv(matrix, filepath, header=None):
+
+    import os
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    np.savetxt(filepath, matrix, delimiter=",", fmt="%.6f", header=header or "")
+
+def load_matrix_csv(filepath):
+
+    return np.loadtxt(filepath, delimiter=",", comments="#")
 
 if __name__ == "__main__":
     import sys

@@ -1,49 +1,42 @@
-# TurbidityVision — Image Processing Based Turbidity Estimation
+# TurbidityVision — Image Processing Based Turbidity & Particle Size Estimation
 
-A software prototype for estimating **image blur caused by optical scattering** and using the resulting blur information to estimate turbidity and particle characteristics.
+A complete application for estimating **optical image blur caused by particle forward scattering** and mapping blur matrices and derived scattering angles to **Turbidity (NTU)** and **Suspended Particle Size** for future machine learning regression models.
 
-The project follows the intended pipeline:
+### Complete Workflow
 
 ```text
-Projected Pattern
-      ↓
-Image Capture / Simulated Blur
-      ↓
-Image Blur / Sharpness Estimation
-      ↓
-m × n Blur Matrix
-      ↓
-Normalized Blur-Ratio Matrix (0–1)
-      ↓
-Scattering Angle
-      ↓
-Particle Type + Concentration
-      ↓
-Turbidity (NTU) + Particle Size
+Reference Pattern Image
+        ↓
+Live Camera / Imager
+        ↓
+Capture Image
+        ↓
+Preprocessing (11 Stages)
+        ↓
+Reference vs Captured Comparison & Alignment
+        ↓
+Blur / Sharpness Calculation (Laplacian, Tenengrad, FFT, All)
+        ↓
+m × n Blur Matrix & Statistics
+        ↓
+Scattering Angle Matrix & Statistics (atan(Blur Value))
+        ↓
+Feature Extraction
+        ↓
+Ground Truth Experiment Data (Fluid, Material, Particle Size, Conc, NTU)
+        ↓
+CSV Dataset (data/ layout) & Matrix Persistence
+        ↓
+Future Machine Learning Architecture
+        ↓
+Target 1: NTU Prediction  |  Target 2: Particle Size Prediction
 ```
 
-> **Important:** The current turbidity, particle-size, scattering-angle calibration, and particle classification values are software placeholders. They are suitable for testing the complete pipeline, but they are **not yet physically calibrated measurements** from the real turbidity rig.
+### Running the Application
 
----
-
-## 1. Project Objective
-
-The objective is to develop an embedded-friendly image-processing system that can:
-
-- Project a known image pattern through a fluid.
-- Capture the resulting image using a camera.
-- Divide the captured image into small kernels/cells.
-- Calculate a blur/sharpness value for every kernel.
-- Generate a 2D blur matrix.
-- Normalize the matrix to a 0–1 blur-ratio representation.
-- Convert the normalized blur information into scattering-angle information.
-- Estimate particle type and concentration.
-- Estimate turbidity in NTU.
-- Estimate particle size.
-- Compare different projected patterns.
-- Validate blur sensitivity using simulated Gaussian blur.
-- Export the processed blur matrix as CSV.
-- Run using a laptop/USB webcam now and support Raspberry Pi camera integration later.
+```bash
+python turbidity_app.py
+```
 
 ---
 

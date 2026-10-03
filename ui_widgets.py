@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-
 BG = "#0b0e12"
 PANEL = "#12171d"
 CARD = "#171d25"
@@ -27,7 +26,6 @@ elif sys.platform.startswith("win"):
 else:
     FONT_UI, FONT_MONO = "DejaVu Sans", "DejaVu Sans Mono"
 
-
 def fmt_compact(v):
     a = abs(v)
     if a >= 1e6:
@@ -42,23 +40,18 @@ def fmt_compact(v):
         return f"{v:.1f}"
     return f"{v:.2f}"
 
-
 def fmt_ratio(v):
     return f"{v:.2f}"
-
 
 def fmt_angle(v):
     return f"{v:.1f}"
 
-
 _FONT_CACHE = {}
-
 
 def _mono(pt):
     if pt not in _FONT_CACHE:
         _FONT_CACHE[pt] = tkfont.Font(family=FONT_MONO, size=pt)
     return _FONT_CACHE[pt]
-
 
 def fit_font(maxlen, cw, ch, hi=11, lo=5):
     for pt in range(hi, lo - 1, -1):
@@ -67,9 +60,7 @@ def fit_font(maxlen, cw, ch, hi=11, lo=5):
             return pt
     return None
 
-
 _LUT_CACHE = {}
-
 
 def make_lut(cmap):
     if cmap not in _LUT_CACHE:
@@ -81,7 +72,6 @@ def make_lut(cmap):
             for b, g, r in bgr
         ]
     return _LUT_CACHE[cmap]
-
 
 class MatrixView(tk.Canvas):
     def __init__(self, parent, cmap=cv2.COLORMAP_JET, fmt=fmt_compact,
@@ -108,7 +98,6 @@ class MatrixView(tk.Canvas):
             self.bind("<Double-Button-1>", lambda e: dbl_cb())
             self.configure(cursor="hand2")
 
-
     def set_matrix(self, m, vmin=None, vmax=None):
         self.matrix = np.asarray(m, dtype=np.float64)
         self.vmin = float(self.matrix.min() if vmin is None else vmin)
@@ -123,7 +112,6 @@ class MatrixView(tk.Canvas):
     def highlight(self, cell):
         self._hl_cell = cell
         self._draw_highlight()
-
 
     def redraw(self):
         self.delete("all")
@@ -181,7 +169,6 @@ class MatrixView(tk.Canvas):
                                   x0 + (c + 1) * cw, y0 + (r + 1) * ch,
                                   outline="#ffffff", width=2, tags="hl")
 
-
     def _cell_at(self, x, y):
         if self._geom is None:
             return None
@@ -202,7 +189,6 @@ class MatrixView(tk.Canvas):
         self._hover_cell = None
         if self.hover_cb:
             self.hover_cb(None)
-
 
 class ImageView(tk.Canvas):
     def __init__(self, parent, **kw):
@@ -236,7 +222,6 @@ class ImageView(tk.Canvas):
         self.create_rectangle((W - nw) // 2, (H - nh) // 2,
                               (W + nw) // 2, (H + nh) // 2, outline=LINE)
 
-
 class ColorBar(tk.Frame):
     def __init__(self, parent, cmap):
         super().__init__(parent, bg=CARD)
@@ -262,7 +247,6 @@ class ColorBar(tk.Frame):
     def set_range(self, lo_text, hi_text):
         self.lo.config(text=lo_text)
         self.hi.config(text=hi_text)
-
 
 class StageCard(tk.Frame):
     def __init__(self, parent, badge, title, subtitle, accent, kind="matrix",
@@ -302,3 +286,73 @@ class StageCard(tk.Frame):
 
     def set_footer(self, text):
         self.foot.config(text=text)
+
+def show_numerical_matrix_dialog(parent, matrix, title="Numerical Matrix", unit=""):
+\
+\
+
+    if matrix is None:
+        return
+    win = tk.Toplevel(parent)
+    win.title(title)
+    win.configure(bg=BG)
+    win.geometry("780x520")
+
+    head = tk.Frame(win, bg=PANEL, pady=10, padx=16)
+    head.pack(fill="x")
+    rows, cols = matrix.shape
+    tk.Label(head, text=f"{title}  ({rows} rows x {cols} cols)", bg=PANEL, fg=SHARP,
+             font=(FONT_UI, 13, "bold")).pack(side="left")
+
+    stats = {
+        "Mean": float(np.mean(matrix)),
+        "Min": float(np.min(matrix)),
+        "Max": float(np.max(matrix)),
+        "Std": float(np.std(matrix)),
+        "Median": float(np.median(matrix)),
+    }
+    stat_txt = "  |  ".join(f"{k}: {v:.2f}{unit}" for k, v in stats.items())
+    tk.Label(head, text=stat_txt, bg=PANEL, fg=AMBER, font=(FONT_MONO, 9)).pack(side="right")
+
+    body = tk.Frame(win, bg=BG, padx=10, pady=10)
+    body.pack(fill="both", expand=True)
+
+    from tkinter import ttk
+    frame = tk.Frame(body, bg=CARD)
+    frame.pack(fill="both", expand=True)
+
+    col_ids = ["row"] + [f"c{c}" for c in range(cols)]
+    tree = ttk.Treeview(frame, columns=col_ids, show="headings", height=15)
+
+    style = ttk.Style()
+    style.theme_use("default")
+    style.configure("Treeview", background=CARD, foreground=TEXT, fieldbackground=CARD,
+                    font=(FONT_MONO, 9), rowheight=24)
+    style.configure("Treeview.Heading", background=PANEL, foreground=SHARP,
+                    font=(FONT_UI, 9, "bold"))
+
+    tree.heading("row", text="Kernel")
+    tree.column("row", width=70, anchor="center")
+    for c in range(cols):
+        cid = f"c{c}"
+        tree.heading(cid, text=f"Col {c+1}")
+        tree.column(cid, width=65, anchor="center")
+
+    for r in range(rows):
+        vals = [f"Row {r+1}"] + [f"{matrix[r, c]:.2f}" for c in range(cols)]
+        tree.insert("", "end", values=vals)
+
+    vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+    hsb = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+    tree.grid(row=0, column=0, sticky="nsew")
+    vsb.grid(row=0, column=1, sticky="ns")
+    hsb.grid(row=1, column=0, sticky="ew")
+    frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(0, weight=1)
+
+    foot = tk.Frame(win, bg=PANEL, pady=8, padx=16)
+    foot.pack(fill="x")
+    tk.Button(foot, text="Close", command=win.destroy, bg=FIELD, fg="#06110f",
+              font=(FONT_UI, 9, "bold"), relief="flat", padx=12, pady=4).pack(side="right")
