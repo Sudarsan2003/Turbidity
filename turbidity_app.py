@@ -19,6 +19,7 @@ from camera import Camera
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+STD_W, STD_H = 480, 360   # standard analysis size used everywhere
 
 class TurbidityApp(tk.Tk):
     def __init__(self):
@@ -518,7 +519,7 @@ class TurbidityApp(tk.Tk):
     def _try_load_default_reference(self):
         default_ref = os.path.join(ASSETS_DIR, "checkerboard.png")
         if os.path.exists(default_ref):
-            self.set_reference_from_path(default_ref)
+            self.set_reference_from_path(default_ref, warn=False)
 
     def upload_reference_dialog(self):
         p = filedialog.askopenfilename(
@@ -529,12 +530,40 @@ class TurbidityApp(tk.Tk):
         if p:
             self.set_reference_from_path(p)
 
-    def set_reference_from_path(self, path):
+    def _confirm_upload(self, img, path, role, other_size=None):
+        """Warn if an uploaded image is not the standard size/shape/format.
+        Returns True to continue loading, False if the user cancels."""
+        h, w = img.shape[:2]
+        msgs = []
+        if (w, h) != (STD_W, STD_H):
+            how = "enlarged" if w * h < STD_W * STD_H else "shrunk"
+            msgs.append(f"Size is {w}x{h}, not {STD_W}x{STD_H}. It will be {how}, "
+                        f"which slightly changes the sharpness values.")
+            if abs(w / h - STD_W / STD_H) > 0.02:
+                msgs.append(f"Shape is different (aspect {w / h:.2f} vs {STD_W / STD_H:.2f}), "
+                            f"so the picture will be STRETCHED and distorted.")
+        if path.lower().endswith((".jpg", ".jpeg", ".jpe")):
+            msgs.append("JPEG is compressed and softens edges. PNG is preferred.")
+        if other_size is not None and tuple(other_size) != (w, h):
+            msgs.append(f"The reference is {other_size[0]}x{other_size[1]} but this {role} is "
+                        f"{w}x{h}. Use images from the same source and size.")
+        if not msgs:
+            return True
+        self.v_status.set(f"Warning: {role} is not {STD_W}x{STD_H} ({w}x{h}).")
+        text = "\n\n".join(f"- {m}" for m in msgs)
+        return messagebox.askokcancel(
+            "Image size warning",
+            f"{role.capitalize()}: {os.path.basename(path)}\n\n{text}\n\n"
+            f"For reliable results use live camera captures ({STD_W}x{STD_H}).\n\nLoad anyway?")
+
+    def set_reference_from_path(self, path, warn=True):
         try:
             data = np.fromfile(path, dtype=np.uint8)
             img = cv2.imdecode(data, cv2.IMREAD_COLOR)
             if img is None:
                 raise ValueError("Could not decode image")
+            if warn and not self._confirm_upload(img, path, "reference"):
+                return
 
             meta = data_manager.save_reference_image(img, os.path.basename(path))
             self.ref_img = img
@@ -632,6 +661,9 @@ class TurbidityApp(tk.Tk):
             data = np.fromfile(p, dtype=np.uint8)
             img = cv2.imdecode(data, cv2.IMREAD_COLOR)
             if img is not None:
+                other = (self.ref_meta["width"], self.ref_meta["height"]) if self.ref_meta else None
+                if not self._confirm_upload(img, p, "sample", other):
+                    return
                 self.captured_img = img
                 self.active_exp_id = data_manager.get_next_experiment_id()
                 self.v_exp_id.set(self.active_exp_id)
