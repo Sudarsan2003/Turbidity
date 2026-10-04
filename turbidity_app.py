@@ -52,13 +52,14 @@ class TurbidityApp(tk.Tk):
         self.v_size_unit = tk.StringVar(value="µm")
         self.v_conc = tk.StringVar(value="50.0")
         self.v_conc_unit = tk.StringVar(value="mg/L")
-        self.v_ntu = tk.StringVar(value="25.0")
+        self.v_ntu = tk.StringVar(value="")
         self.v_sample_id = tk.StringVar(value="Sample_001")
 
         self.v_status = tk.StringVar(value="Ready. Load reference image and connect camera.")
         self.v_ref_info = tk.StringVar(value="Reference: None loaded")
         self.v_pred_ntu = tk.StringVar(value="--")
         self.v_pred_size = tk.StringVar(value="--")
+        self.v_blur_ratio = tk.StringVar(value="--")
 
         self._build_ui()
 
@@ -92,6 +93,11 @@ class TurbidityApp(tk.Tk):
 
         pred_box = tk.Frame(hdr, bg=W.PANEL)
         pred_box.pack(side="right", fill="y")
+
+        t0 = tk.Frame(pred_box, bg=W.CARD, padx=12, pady=2, highlightbackground=W.LINE, highlightthickness=1)
+        t0.pack(side="left", padx=6)
+        tk.Label(t0, text="BLUR RATIO", bg=W.CARD, fg=W.DIM, font=(W.FONT_UI, 8, "bold")).pack()
+        tk.Label(t0, textvariable=self.v_blur_ratio, bg=W.CARD, fg=W.VIOLET, font=(W.FONT_MONO, 12, "bold")).pack()
 
         t1 = tk.Frame(pred_box, bg=W.CARD, padx=12, pady=2, highlightbackground=W.LINE, highlightthickness=1)
         t1.pack(side="left", padx=6)
@@ -148,10 +154,7 @@ class TurbidityApp(tk.Tk):
         bf.pack(fill="x", pady=2)
         tk.Button(bf, text="Upload Reference", command=self.upload_reference_dialog,
                   bg=W.BLUE, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", pady=3)\
-            .pack(side="left", fill="x", expand=True, padx=(0, 2))
-        tk.Button(bf, text="Select System Image", command=self.select_preset_dialog,
-                  bg=W.FIELD, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", pady=3)\
-            .pack(side="left", fill="x", expand=True, padx=(2, 0))
+            .pack(side="left", fill="x", expand=True)
 
         self.ref_info_lbl = tk.Label(p, textvariable=self.v_ref_info, bg=W.CARD, fg=W.TEXT,
                                      font=(W.FONT_MONO, 8), justify="left", anchor="w",
@@ -321,8 +324,22 @@ class TurbidityApp(tk.Tk):
                                        bg=W.CARD, fg=W.DIM, font=(W.FONT_MONO, 8), pady=4)
         self.blur_stats_lbl.pack(fill="x")
 
+        bot_grid.columnconfigure(2, weight=1)
+        rat_box = tk.Frame(bot_grid, bg=W.CARD, highlightbackground=W.LINE, highlightthickness=1)
+        rat_box.grid(row=0, column=1, sticky="nsew", padx=3, pady=3)
+        r_head = tk.Frame(rat_box, bg=W.CARD, padx=8, pady=6)
+        r_head.pack(fill="x")
+        tk.Label(r_head, text="BLUR RATIO MATRIX (1 - sample/ref)", bg=W.CARD, fg=W.VIOLET, font=(W.FONT_UI, 10, "bold")).pack(side="left")
+        tk.Button(r_head, text="[ Numerical Matrix ]", command=self.show_ratio_numerical_matrix,
+                  bg=W.FIELD, fg="#06110f", font=(W.FONT_UI, 8, "bold"), relief="flat", padx=6, pady=2).pack(side="right")
+        self.ratio_view = W.MatrixView(rat_box, cmap=cv2.COLORMAP_INFERNO, fmt=W.fmt_ratio)
+        self.ratio_view.pack(fill="both", expand=True, padx=8)
+        self.ratio_stats_lbl = tk.Label(rat_box, text="Mean: -- | Min: -- | Max: -- | Std: -- | Median: --",
+                                        bg=W.CARD, fg=W.DIM, font=(W.FONT_MONO, 8), pady=4)
+        self.ratio_stats_lbl.pack(fill="x")
+
         ang_box = tk.Frame(bot_grid, bg=W.CARD, highlightbackground=W.LINE, highlightthickness=1)
-        ang_box.grid(row=0, column=1, sticky="nsew", padx=3, pady=3)
+        ang_box.grid(row=0, column=2, sticky="nsew", padx=3, pady=3)
         a_head = tk.Frame(ang_box, bg=W.CARD, padx=8, pady=6)
         a_head.pack(fill="x")
         tk.Label(a_head, text="SCATTERING ANGLE MATRIX (HEATMAP)", bg=W.CARD, fg=W.AMBER, font=(W.FONT_UI, 10, "bold")).pack(side="left")
@@ -336,10 +353,29 @@ class TurbidityApp(tk.Tk):
 
         feat_bar = tk.Frame(parent, bg=W.PANEL, padx=12, pady=6)
         feat_bar.pack(fill="x", padx=6, pady=4)
-        self.raw_feat_lbl = tk.Label(feat_bar,
-                                     text="Raw Scores: Laplacian Var = --  |  Tenengrad = --  |  FFT Energy = --",
-                                     bg=W.PANEL, fg=W.TEXT, font=(W.FONT_MONO, 9))
-        self.raw_feat_lbl.pack(side="left")
+        tk.Label(feat_bar, text="BLUR METRICS (sample vs reference)", bg=W.PANEL, fg=W.AMBER,
+                 font=(W.FONT_UI, 9, "bold")).pack(anchor="w")
+        tbl = tk.Frame(feat_bar, bg=W.PANEL)
+        tbl.pack(fill="x", pady=(4, 2))
+        heads = ["Algorithm", "Sample", "Reference", "Blur ratio (global)",
+                 "Cell ratio mean", "Cell ratio std", "Cell ratio P90", "Mean angle"]
+        for c, h in enumerate(heads):
+            tk.Label(tbl, text=h, bg=W.PANEL, fg=W.DIM, font=(W.FONT_UI, 8, "bold"),
+                     anchor="w").grid(row=0, column=c, sticky="w", padx=(0, 16))
+        self.metric_cells = {}
+        for r, (key, nm) in enumerate((("laplacian", "Variance of Laplacian"),
+                                       ("tenengrad", "Tenengrad"),
+                                       ("fft", "FFT High-Freq (%)")), 1):
+            row = []
+            for c in range(len(heads)):
+                lbl = tk.Label(tbl, text=nm if c == 0 else "--", bg=W.PANEL, fg=W.TEXT,
+                               font=(W.FONT_MONO, 9), anchor="w")
+                lbl.grid(row=r, column=c, sticky="w", padx=(0, 16))
+                row.append(lbl)
+            self.metric_cells[key] = row
+        self.raw_feat_lbl = tk.Label(feat_bar, text="Alignment: --", bg=W.PANEL, fg=W.TEXT,
+                                     font=(W.FONT_MONO, 9), anchor="w", justify="left")
+        self.raw_feat_lbl.pack(anchor="w", pady=(4, 0))
 
     def _build_preprocessing_tab(self, parent):
         top_ctrl = tk.Frame(parent, bg=W.PANEL, padx=12, pady=8)
@@ -487,15 +523,6 @@ class TurbidityApp(tk.Tk):
     def upload_reference_dialog(self):
         p = filedialog.askopenfilename(
             title="Upload Reference Pattern Image",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff"), ("All files", "*.*")]
-        )
-        if p:
-            self.set_reference_from_path(p)
-
-    def select_preset_dialog(self):
-
-        p = filedialog.askopenfilename(
-            title="Select Reference Pattern from System",
             initialdir=ASSETS_DIR if os.path.isdir(ASSETS_DIR) else BASE_DIR,
             filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.tiff"), ("All files", "*.*")]
         )
@@ -696,10 +723,7 @@ class TurbidityApp(tk.Tk):
             text=f"Mean: {a_stats['mean']:.2f}°  |  Min: {a_stats['min']:.2f}°  |  Max: {a_stats['max']:.2f}°  |  Std: {a_stats['std']:.2f}°  |  Median: {a_stats['median']:.2f}°"
         )
 
-        scores = res["all_blur_scores"]
-        self.raw_feat_lbl.config(
-            text=f"Raw Scores:  Laplacian Var = {scores['laplacian']:.2f}  |  Tenengrad = {scores['tenengrad']:.2f}  |  FFT High-Freq = {scores['fft']:.4f}%"
-        )
+        self._update_metrics(res)
 
         for i, st in enumerate(res["stages"]):
             if i < len(self.stage_cards):
@@ -709,6 +733,47 @@ class TurbidityApp(tk.Tk):
         self._predict_inline()
 
         self.v_status.set(f"Pipeline executed for {self.v_exp_id.get()} (Grid: {rows}x{cols}). Ready to save.")
+
+    def _update_metrics(self, res):
+        m = res["metrics"]
+        active = res.get("active_method", "laplacian")
+        single = "all" not in self.v_algo.get().lower()
+        for key, cells in self.metric_cells.items():
+            d = m[key]
+            sf = (lambda v: f"{v:.2f}%") if key == "fft" else W.fmt_compact
+            vals = [None, sf(d["sample"]), sf(d["ref"]), f"{d['global_ratio']:.3f}",
+                    f"{d['ratio_mean']:.3f}", f"{d['ratio_std']:.3f}",
+                    f"{d['ratio_p90']:.3f}", f"{d['angle_mean']:.2f}\u00b0"]
+            hl = single and key == active
+            for c, lbl in enumerate(cells):
+                if vals[c] is not None:
+                    lbl.config(text=vals[c])
+                lbl.config(fg=W.AMBER if hl else W.TEXT)
+
+        rm = res["ratio_matrix"]
+        self.ratio_view.set_matrix(rm, vmin=0.0, vmax=1.0)
+        rs = blur_matrix.matrix_stats(rm)
+        self.ratio_stats_lbl.config(
+            text=f"Mean: {rs['mean']:.3f}  |  Min: {rs['min']:.3f}  |  Max: {rs['max']:.3f}  |  "
+                 f"Std: {rs['std']:.3f}  |  Median: {rs['median']:.3f}")
+        self.v_blur_ratio.set(f"{m[active]['ratio_mean']:.3f}")
+
+        kh, kw = res.get("kernel_px", (0, 0))
+        clip = res["clipped_pct"]
+        self.raw_feat_lbl.config(
+            text=(f"Shift dx={res['shift_dx']:.1f} dy={res['shift_dy']:.1f}px  |  "
+                  f"Diff mean={res['diff_mean']:.2f} std={res['diff_std']:.2f}  |  "
+                  f"Intensity ratio={res['intensity_ratio']:.3f}  |  Contrast ratio={res['contrast_ratio']:.3f}\n"
+                  f"Kernel {kh}x{kw}px  |  Blur matrix {res['grid_rows']}x{res['grid_cols']} "
+                  f"({res['grid_rows'] * res['grid_cols']} cells)  |  Clipped pixels={clip:.2f}%"
+                  + ("  !! >2% clipped: lower exposure" if clip > 2.0 else "")),
+            fg=W.RED if clip > 2.0 else W.TEXT)
+
+    def show_ratio_numerical_matrix(self):
+        if self.proc_res is None or "ratio_matrix" not in self.proc_res:
+            messagebox.showinfo("No Data", "Capture or load an image first to compute the Blur Ratio Matrix.")
+            return
+        W.show_numerical_matrix_dialog(self, self.proc_res["ratio_matrix"], title="Numerical Blur Ratio Matrix", unit="")
 
     def show_blur_numerical_matrix(self):
         if self.proc_res is None or "blur_matrix" not in self.proc_res:

@@ -123,6 +123,29 @@ def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
     all_scores = blur.compute_all_blur_scores(aligned_bgr)
     ref_scores = blur.compute_all_blur_scores(resized_ref)
 
+    # ---- blur-ratio metrics (sample vs reference) ----
+    g_s = blur.to_gray(aligned_bgr)
+    g_r = blur.to_gray(resized_ref)
+    metrics = {}
+    for _m in ("laplacian", "tenengrad", "fft"):
+        _ms, _mr = all_blur_matrices[_m], all_ref_matrices[_m]
+        _mask = _mr > 0.05 * _mr.max()
+        _cell = np.clip(1.0 - _ms / np.maximum(_mr, 1e-9), 0.0, 1.0)
+        _sel = _cell[_mask] if _mask.any() else np.zeros(1)
+        metrics[_m] = {
+            "sample": float(all_scores[_m]),
+            "ref": float(ref_scores[_m]),
+            "global_ratio": float(1.0 - all_scores[_m] / max(ref_scores[_m], 1e-9)),
+            "ratio_mean": float(_sel.mean()),
+            "ratio_std": float(_sel.std()),
+            "ratio_p90": float(np.percentile(_sel, 90)),
+            "angle_mean": float(np.degrees(np.arctan(_sel)).mean()),
+        }
+    ratio_matrix = np.clip(1.0 - primary_blur_matrix / np.maximum(all_ref_matrices[active_m], 1e-9), 0.0, 1.0)
+    intensity_ratio = float(g_s.mean() / max(g_r.mean(), 1e-6))
+    contrast_ratio = float(g_s.std() / max(g_r.std(), 1e-6))
+    clipped_pct = float((aligned_bgr.max(axis=2) >= 253).mean() * 100.0)
+
     stages = [
         {"name": STAGE_NAMES[0], "image": resized_ref, "desc": "Baseline clear projected pattern"},
         {"name": STAGE_NAMES[1], "image": cap_stage, "desc": "Raw captured frame from camera/sample"},
@@ -158,5 +181,11 @@ def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
         "diff_std": align_res["diff_std"],
         "grid_rows": grid_rows,
         "grid_cols": grid_cols,
+        "metrics": metrics,
+        "ratio_matrix": ratio_matrix,
+        "active_method": active_m,
+        "intensity_ratio": intensity_ratio,
+        "contrast_ratio": contrast_ratio,
+        "clipped_pct": clipped_pct,
         "kernel_px": (h_t // grid_rows, w_t // grid_cols),
     }
