@@ -34,7 +34,7 @@ STAGE_NAMES = [
 ]
 
 def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
-                              method="laplacian", target_size=(480, 360)):
+                              method="laplacian", target_size=(480, 360), kernel=None):
 \
 \
 \
@@ -79,6 +79,8 @@ def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
     diff_color = align_res["diff_color"]
     overlay_bgr = align_res["overlay_bgr"]
 
+    if kernel is not None:  # (m, n) kernel in pixels -> (p/m) x (q/n) blur matrix
+        grid_rows, grid_cols = blur_matrix.grid_from_kernel(h_t, w_t, kernel[0], kernel[1])
     if grid_rows is None:
         grid_rows = max(2, round(grid_cols * h_t / w_t))
     else:
@@ -129,7 +131,7 @@ def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
         {"name": STAGE_NAMES[4], "image": norm_bgr, "desc": "Min-Max contrast normalized luminance"},
         {"name": STAGE_NAMES[5], "image": aligned_bgr, "desc": f"Phase-correlated registration (shift: {align_res['dx']:.1f}, {align_res['dy']:.1f}px)"},
         {"name": STAGE_NAMES[6], "image": diff_color, "desc": f"Absolute difference |Sample - Ref| (mean diff: {align_res['diff_mean']:.2f})"},
-        {"name": STAGE_NAMES[7], "image": grid_div_bgr, "desc": f"m x n Kernel Grid: {grid_rows} rows x {grid_cols} cols ({grid_rows * grid_cols} cells)"},
+        {"name": STAGE_NAMES[7], "image": grid_div_bgr, "desc": f"Kernel {h_t // grid_rows}x{w_t // grid_cols} px -> blur matrix {grid_rows} x {grid_cols} ({grid_rows * grid_cols} cells)"},
         {"name": STAGE_NAMES[8], "image": blur_calc_bgr, "desc": f"Local edge/gradient response ({active_m})"},
         {"name": STAGE_NAMES[9], "image": blur_mat_heatmap, "desc": f"Blur Matrix (mean: {blur_stats['mean']:.2f}, std: {blur_stats['std']:.2f})"},
         {"name": STAGE_NAMES[10], "image": angle_mat_heatmap, "desc": f"Scattering Angle Matrix (mean: {angle_stats['mean']:.2f}°, max: {angle_stats['max']:.2f}°)"},
@@ -156,4 +158,5 @@ def run_preprocessing_pipeline(ref_img, cap_img, grid_cols=12, grid_rows=None,
         "diff_std": align_res["diff_std"],
         "grid_rows": grid_rows,
         "grid_cols": grid_cols,
+        "kernel_px": (h_t // grid_rows, w_t // grid_cols),
     }

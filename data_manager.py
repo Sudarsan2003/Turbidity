@@ -225,7 +225,7 @@ def save_experiment_record(exp_id, ref_meta, cap_img, proc_res, gt):
         "image_width": w,
         "image_height": h,
         "kernel_rows": proc_res.get("grid_rows", 12),
-        "kernel_columns": proc_res.get("grid_cols", 16),
+        "kernel_columns": proc_res.get("grid_cols", 12),
         "laplacian_variance": f"{all_scores.get('laplacian', 0.0):.4f}",
         "tenengrad": f"{all_scores.get('tenengrad', 0.0):.4f}",
         "fft_high_frequency_energy": f"{all_scores.get('fft', 0.0):.4f}",

@@ -16,7 +16,14 @@ _METRIC_FNS = {
     "fft": fft_high_freq_energy,
 }
 
-def compute_blur_matrix(img, grid_cols=12, grid_rows=None, method="laplacian"):
+def grid_from_kernel(img_h, img_w, kernel_m, kernel_n):
+    """Spec Fig 2: imager of p x q pixels, kernel of m x n pixels
+    -> blur matrix of (p/m) x (q/n).  kernel_m = kernel height (rows),
+    kernel_n = kernel width (cols), both in pixels."""
+    kernel_m, kernel_n = max(2, int(kernel_m)), max(2, int(kernel_n))
+    return max(1, img_h // kernel_m), max(1, img_w // kernel_n)
+
+def compute_blur_matrix(img, grid_cols=12, grid_rows=None, method="laplacian", kernel=None):
 \
 \
 \
@@ -27,6 +34,8 @@ def compute_blur_matrix(img, grid_cols=12, grid_rows=None, method="laplacian"):
 
     gray = to_gray(img)
     h, w = gray.shape
+    if kernel is not None:
+        grid_rows, grid_cols = grid_from_kernel(h, w, kernel[0], kernel[1])
     if grid_rows is None:
         grid_rows = max(2, round(grid_cols * h / w))
     else:
@@ -50,13 +59,13 @@ def compute_blur_matrix(img, grid_cols=12, grid_rows=None, method="laplacian"):
 
     return matrix
 
-def compute_all_blur_matrices(img, grid_cols=12, grid_rows=None):
+def compute_all_blur_matrices(img, grid_cols=12, grid_rows=None, kernel=None):
 \
 \
 \
 
     return {
-        m: compute_blur_matrix(img, grid_cols=grid_cols, grid_rows=grid_rows, method=m)
+        m: compute_blur_matrix(img, grid_cols=grid_cols, grid_rows=grid_rows, method=m, kernel=kernel)
         for m in ("laplacian", "tenengrad", "fft")
     }
 
