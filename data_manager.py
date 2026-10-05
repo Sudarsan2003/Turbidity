@@ -22,13 +22,26 @@ import cv2
 import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# All data lives in ONE folder. Default: "data" next to this file. To keep a single dataset no matter
+# which copy of the code you run, set the environment variable TURBIDITY_DATA_DIR to a fixed path.
+DATA_DIR = os.environ.get("TURBIDITY_DATA_DIR") or os.path.join(BASE_DIR, "data")
 REF_DIR = os.path.join(DATA_DIR, "references")
 CAP_DIR = os.path.join(DATA_DIR, "captures")
 BLUR_MAT_DIR = os.path.join(DATA_DIR, "blur_matrices")
 ANGLE_MAT_DIR = os.path.join(DATA_DIR, "scattering_angles")
 CSV_PATH = os.path.join(DATA_DIR, "experiments.csv")
 REGRESSION_CSV_PATH = os.path.join(DATA_DIR, "regression_dataset.csv")
+
+_METHODS = ("laplacian", "tenengrad", "fft")
+
+# Ratio features (sample vs clear-water reference). These are lighting-independent
+# and are what the regression uses. Raw scores are still saved for reference only.
+RATIO_FEATURE_COLUMNS = (
+    [f"{k}_{m}" for m in _METHODS
+     for k in ("global_ratio", "ratio_mean", "ratio_std", "ratio_p90", "angle_mean")]
+    + ["intensity_ratio", "contrast_ratio"]
+)
+QC_COLUMNS = ["clipped_pct"]
 
 EXPERIMENT_COLUMNS = [
     "experiment_id",
@@ -68,37 +81,45 @@ EXPERIMENT_COLUMNS = [
     "ref_laplacian_variance",
     "ref_tenengrad",
     "ref_fft_energy",
+] + RATIO_FEATURE_COLUMNS + QC_COLUMNS + [
     "blur_matrix_file",
     "scattering_angles_file",
     "status",
 ]
 
-REGRESSION_FEATURE_COLUMNS = [
-    "laplacian_variance",
-    "tenengrad",
-    "fft_high_frequency_energy",
-    "mean_blur",
-    "min_blur",
-    "max_blur",
-    "median_blur",
-    "std_blur",
-    "mean_scattering_angle",
-    "min_scattering_angle",
-    "max_scattering_angle",
-    "median_scattering_angle",
-    "std_scattering_angle",
-    "diff_mean",
-    "diff_std",
-    "ref_laplacian_variance",
-    "ref_tenengrad",
-    "ref_fft_energy",
-]
+REGRESSION_FEATURE_COLUMNS = list(RATIO_FEATURE_COLUMNS)
 
 REGRESSION_TARGET_COLUMNS = [
     "known_NTU",
     "particle_size",
     "particle_concentration",
 ]
+
+def _write_png(path, img):
+    """Lossless PNG write that raises on failure (cv2.imwrite fails silently)."""
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise IOError(f"Could not encode PNG: {path}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    buf.tofile(path)
+
+def _migrate_csv_if_needed():
+    """If experiments.csv was written with an older column set, rewrite it with the
+    current columns (new columns left blank) and keep a backup of the original."""
+    with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
+        header = next(csv.reader(f), [])
+    if header == EXPERIMENT_COLUMNS:
+        return
+    with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = os.path.join(DATA_DIR, f"experiments_backup_{stamp}.csv")
+    os.replace(CSV_PATH, backup)
+    with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=EXPERIMENT_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
 
 def init_storage():
 
@@ -108,6 +129,26 @@ def init_storage():
         with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(EXPERIMENT_COLUMNS)
+    else:
+        _migrate_csv_if_needed()
+
+def features_from_proc(proc_res):
+    """Ratio features for one processed frame, keyed by REGRESSION_FEATURE_COLUMNS.
+    Single source of truth for the CSV, the regression training and live prediction.
+    Returns None if the pipeline result has no ratio metrics."""
+    if not proc_res or "metrics" not in proc_res:
+        return None
+    m = proc_res["metrics"]
+    out = {}
+    for meth in _METHODS:
+        d = m.get(meth)
+        if d is None:
+            return None
+        for k in ("global_ratio", "ratio_mean", "ratio_std", "ratio_p90", "angle_mean"):
+            out[f"{k}_{meth}"] = float(d[k])
+    out["intensity_ratio"] = float(proc_res.get("intensity_ratio", float("nan")))
+    out["contrast_ratio"] = float(proc_res.get("contrast_ratio", float("nan")))
+    return out
 
 def get_next_experiment_id():
 
@@ -155,7 +196,7 @@ def save_reference_image(img, original_filename="reference.png"):
         counter += 1
 
     if not os.path.exists(target_path):
-        cv2.imwrite(target_path, img)
+        _write_png(target_path, img)
 
     h, w = img.shape[:2]
     fmt = ext.replace(".", "").upper()
@@ -180,7 +221,7 @@ def save_experiment_record(exp_id, ref_meta, cap_img, proc_res, gt):
 
     cap_fname = f"{exp_id}.png"
     cap_path = os.path.join(CAP_DIR, cap_fname)
-    cv2.imwrite(cap_path, cap_img)
+    _write_png(cap_path, cap_img)
 
     blur_fname = f"{exp_id}_blur.csv"
     blur_path = os.path.join(BLUR_MAT_DIR, blur_fname)
@@ -250,6 +291,11 @@ def save_experiment_record(exp_id, ref_meta, cap_img, proc_res, gt):
         "scattering_angles_file": angle_fname,
         "status": "Saved",
     }
+    ratio_feats = features_from_proc(proc_res) or {}
+    for col in RATIO_FEATURE_COLUMNS:
+        v = ratio_feats.get(col)
+        row[col] = "" if v is None or not np.isfinite(v) else f"{v:.6g}"
+    row["clipped_pct"] = f"{proc_res.get('clipped_pct', 0.0):.4f}"
 
     with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=EXPERIMENT_COLUMNS)
@@ -384,3 +430,82 @@ def export_regression_dataset(dest_path=None):
             writer.writerow(row)
 
     return dest, len(exported_rows)
+
+def _row_key(r):
+    return (r.get("timestamp", ""), r.get("laplacian_variance", ""), r.get("known_NTU", ""),
+            r.get("particle_concentration", ""))
+
+
+def merge_experiment_csvs(paths):
+    """Append the rows of other experiments.csv files into the main dataset
+    (data/experiments.csv), and copy their capture / blur-matrix / angle-matrix files.
+
+    * a row already present (same timestamp, laplacian_variance, NTU, concentration) is skipped
+    * a row whose experiment_id is already taken gets a new id; its files are renamed to match
+    * the main CSV itself is ignored if listed
+    Returns {"added": n, "skipped_duplicates": n, "renumbered": n, "files": [...]}."""
+    import shutil
+    init_storage()
+    main_abs = os.path.abspath(CSV_PATH)
+    with open(CSV_PATH, "r", newline="", encoding="utf-8") as f:
+        existing = list(csv.DictReader(f))
+    seen = {_row_key(r) for r in existing}
+    used = {r.get("experiment_id", "") for r in existing}
+
+    def next_free():
+        nums = [int(m.group(1)) for i in used for m in [re.match(r"EXP(\d+)", i or "", re.I)] if m]
+        return f"EXP{max(nums, default=0) + 1:03d}"
+
+    added = dup = renum = 0
+    done_files = []
+    for path in paths:
+        if os.path.abspath(path) == main_abs or not os.path.exists(path):
+            continue
+        src = os.path.dirname(os.path.abspath(path))
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        new_rows = []
+        for r in rows:
+            if _row_key(r) in seen:
+                dup += 1
+                continue
+            old_id = r.get("experiment_id", "")
+            new_id = old_id
+            if not old_id or old_id in used:
+                new_id = next_free()
+                renum += 1
+            used.add(new_id)
+            seen.add(_row_key(r))
+
+            def copy(sub_src, sub_dst, old_name, new_name):
+                if not old_name:
+                    return old_name
+                s_p = os.path.join(src, sub_src, old_name)
+                d_p = os.path.join(sub_dst, new_name)
+                if os.path.exists(s_p) and not os.path.exists(d_p):
+                    shutil.copy2(s_p, d_p)
+                return new_name
+
+            old_cap = r.get("captured_image_name", "")
+            old_blu = r.get("blur_matrix_file", "")
+            old_ang = r.get("scattering_angles_file", "")
+            if new_id != old_id:
+                r["experiment_id"] = new_id
+                r["captured_image_name"] = f"{new_id}.png"
+                r["blur_matrix_file"] = f"{new_id}_blur.csv"
+                r["scattering_angles_file"] = f"{new_id}_angles.csv"
+            copy("captures", CAP_DIR, old_cap, r.get("captured_image_name", ""))
+            copy("blur_matrices", BLUR_MAT_DIR, old_blu, r.get("blur_matrix_file", ""))
+            copy("scattering_angles", ANGLE_MAT_DIR, old_ang, r.get("scattering_angles_file", ""))
+            ref = r.get("reference_image_name", "")
+            if ref:
+                copy("references", REF_DIR, ref, ref)
+            new_rows.append(r)
+        if new_rows:
+            with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=EXPERIMENT_COLUMNS, extrasaction="ignore")
+                for r in new_rows:
+                    w.writerow(r)
+            added += len(new_rows)
+            done_files.append(path)
+    return {"added": added, "skipped_duplicates": dup, "renumbered": renum, "files": done_files}

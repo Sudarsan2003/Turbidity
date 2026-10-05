@@ -11,15 +11,18 @@ import numpy as np
 import alignment
 import blur
 import blur_matrix
+import calibration
 import data_manager
+import noise_floor
 import preprocessing
 import regression_engine
 import ui_widgets as W
-from camera import Camera
+from camera import Camera, CAPTURE_SIZE, ANALYSIS_SIZE, to_analysis_size
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
-STD_W, STD_H = 480, 360   # standard analysis size used everywhere
+STD_W, STD_H = CAPTURE_SIZE      # native camera size (1920x1080)
+AN_W, AN_H = ANALYSIS_SIZE       # size used for the blur analysis (same 16:9 shape)
 
 class TurbidityApp(tk.Tk):
     def __init__(self):
@@ -37,6 +40,7 @@ class TurbidityApp(tk.Tk):
         self.ref_meta = None
         self.captured_img = None
         self.proc_res = None
+        self.last_calibration = None
         self.active_exp_id = data_manager.get_next_experiment_id()
 
         self.v_cam_idx = tk.StringVar(value="0")
@@ -257,6 +261,12 @@ class TurbidityApp(tk.Tk):
                   bg=W.FIELD, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", pady=3)\
             .pack(fill="x", pady=2)
 
+        tk.Button(p, text="Merge Other CSV Files into Dataset", command=self.merge_csv_dialog,
+                  bg=W.FIELD, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", pady=3)\
+            .pack(fill="x", pady=2)
+        tk.Label(p, text=f"Dataset file:\n{data_manager.CSV_PATH}", bg=W.PANEL, fg=W.DIM,
+                 font=(W.FONT_MONO, 7), justify="left", anchor="w", wraplength=250).pack(fill="x", pady=(2, 4))
+
         tk.Button(p, text="View Experiment History", command=lambda: self.notebook.select(self.tab_history),
                   bg=W.FIELD, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", pady=3)\
             .pack(fill="x", pady=2)
@@ -325,7 +335,8 @@ class TurbidityApp(tk.Tk):
                                        bg=W.CARD, fg=W.DIM, font=(W.FONT_MONO, 8), pady=4)
         self.blur_stats_lbl.pack(fill="x")
 
-        bot_grid.columnconfigure(2, weight=1)
+        for _c in range(3):
+            bot_grid.columnconfigure(_c, weight=1, uniform="matrix_cols")
         rat_box = tk.Frame(bot_grid, bg=W.CARD, highlightbackground=W.LINE, highlightthickness=1)
         rat_box.grid(row=0, column=1, sticky="nsew", padx=3, pady=3)
         r_head = tk.Frame(rat_box, bg=W.CARD, padx=8, pady=6)
@@ -481,11 +492,21 @@ class TurbidityApp(tk.Tk):
         tk.Button(b_bar, text="Predict on Current Frame", command=self.predict_current_frame,
                   bg=W.AMBER, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", padx=10, pady=4).pack(side="left", padx=6)
 
+        b_bar2 = tk.Frame(hdr, bg=W.PANEL)
+        b_bar2.pack(fill="x", pady=(0, 4))
+        tk.Button(b_bar2, text="Calibration Curve: NTU", command=lambda: self.calibration_action("known_NTU"),
+                  bg=W.SHARP, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", padx=10, pady=4).pack(side="left", padx=(0, 6))
+        tk.Button(b_bar2, text="Calibration Curve: Concentration", command=lambda: self.calibration_action("particle_concentration"),
+                  bg=W.SHARP, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", padx=10, pady=4).pack(side="left", padx=6)
+        tk.Button(b_bar2, text="Noise Floor Test (clear water)", command=self.noise_floor_action,
+                  bg=W.BLUE, fg="#06110f", font=(W.FONT_UI, 9, "bold"), relief="flat", padx=10, pady=4).pack(side="left", padx=6)
+
         body_split = tk.Frame(parent, bg=W.BG)
         body_split.pack(fill="both", expand=True, padx=6, pady=4)
         body_split.columnconfigure(0, weight=1)
         body_split.columnconfigure(1, weight=1)
         body_split.rowconfigure(0, weight=1)
+        body_split.rowconfigure(1, weight=1)
 
         ntu_box = tk.Frame(body_split, bg=W.CARD, highlightbackground=W.LINE, highlightthickness=1)
         ntu_box.grid(row=0, column=0, sticky="nsew", padx=3, pady=3)
@@ -504,6 +525,16 @@ class TurbidityApp(tk.Tk):
         self.plot_size_view.pack(fill="both", expand=True, padx=8, pady=4)
         self.lbl_size_metrics = tk.Label(size_box, text="R2: --  |  RMSE: --", bg=W.CARD, fg=W.TEXT, font=(W.FONT_MONO, 9), pady=4)
         self.lbl_size_metrics.pack(fill="x")
+
+        cal_box = tk.Frame(body_split, bg=W.CARD, highlightbackground=W.LINE, highlightthickness=1)
+        cal_box.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=3, pady=3)
+        tk.Label(cal_box, text="Calibration Curve: blur-ratio signal vs known value (fit, R2, detection limit)",
+                 bg=W.CARD, fg=W.SHARP, font=(W.FONT_UI, 10, "bold"), pady=6).pack()
+        self.plot_cal_view = W.ImageView(cal_box, width=620, height=300)
+        self.plot_cal_view.pack(fill="both", expand=True, padx=8, pady=4)
+        self.lbl_cal = tk.Label(cal_box, text="No calibration yet", bg=W.CARD, fg=W.TEXT,
+                                font=(W.FONT_MONO, 9), pady=4, justify="left")
+        self.lbl_cal.pack(fill="x")
 
     def _sec_hdr(self, p, text):
         tk.Label(p, text=text, bg=W.PANEL, fg=W.AMBER, font=(W.FONT_UI, 9, "bold")).pack(anchor="w", pady=(10, 2))
@@ -535,13 +566,15 @@ class TurbidityApp(tk.Tk):
         Returns True to continue loading, False if the user cancels."""
         h, w = img.shape[:2]
         msgs = []
-        if (w, h) != (STD_W, STD_H):
-            how = "enlarged" if w * h < STD_W * STD_H else "shrunk"
-            msgs.append(f"Size is {w}x{h}, not {STD_W}x{STD_H}. It will be {how}, "
-                        f"which slightly changes the sharpness values.")
-            if abs(w / h - STD_W / STD_H) > 0.02:
-                msgs.append(f"Shape is different (aspect {w / h:.2f} vs {STD_W / STD_H:.2f}), "
-                            f"so the picture will be STRETCHED and distorted.")
+        if abs(w / h - STD_W / STD_H) > 0.02:
+            msgs.append(f"Shape is {w}x{h} (aspect {w / h:.2f}), not 16:9 ({STD_W}x{STD_H}). "
+                        f"It will be STRETCHED to {AN_W}x{AN_H} and the pattern distorted.")
+        elif w < AN_W or h < AN_H:
+            msgs.append(f"Size is {w}x{h}, smaller than the analysis size {AN_W}x{AN_H}. "
+                        f"It will be enlarged, which blurs it and mimics turbidity.")
+        elif (w, h) != (STD_W, STD_H):
+            msgs.append(f"Size is {w}x{h}, not the camera size {STD_W}x{STD_H}. "
+                        f"Fine for testing, but reference and sample should match.")
         if path.lower().endswith((".jpg", ".jpeg", ".jpe")):
             msgs.append("JPEG is compressed and softens edges. PNG is preferred.")
         if other_size is not None and tuple(other_size) != (w, h):
@@ -549,12 +582,12 @@ class TurbidityApp(tk.Tk):
                         f"{w}x{h}. Use images from the same source and size.")
         if not msgs:
             return True
-        self.v_status.set(f"Warning: {role} is not {STD_W}x{STD_H} ({w}x{h}).")
+        self.v_status.set(f"Warning: {role} is {w}x{h} (camera size is {STD_W}x{STD_H}).")
         text = "\n\n".join(f"- {m}" for m in msgs)
         return messagebox.askokcancel(
             "Image size warning",
             f"{role.capitalize()}: {os.path.basename(path)}\n\n{text}\n\n"
-            f"For reliable results use live camera captures ({STD_W}x{STD_H}).\n\nLoad anyway?")
+            f"For reliable results use live camera captures ({STD_W}x{STD_H}, saved as PNG).\n\nLoad anyway?")
 
     def set_reference_from_path(self, path, warn=True):
         try:
@@ -594,10 +627,10 @@ class TurbidityApp(tk.Tk):
         try:
             if self.cam is not None:
                 self.cam.release()
-            self.cam = Camera(index=idx, width=480, height=360)
+            self.cam = Camera(index=idx)
             self.is_camera_running = True
             self.btn_cam_toggle.config(text="Stop Camera", bg=W.RED, fg="#ffffff")
-            self.v_status.set(f"Camera connected (Index {idx}). Live preview active.")
+            self.v_status.set(f"Camera connected (Index {idx}): {self.cam.width}x{self.cam.height}. Live preview active.")
         except Exception as e:
             self.cam = None
             self.is_camera_running = False
@@ -617,7 +650,7 @@ class TurbidityApp(tk.Tk):
             if self.is_camera_running and self.cam is not None and self.captured_img is None:
                 frame = self.cam.read_frame()
                 if frame is not None:
-                    self.card_cap.view.set_image(frame)
+                    self.card_cap.view.set_image(to_analysis_size(frame))
         except Exception:
             pass
         self.after(50, self._camera_tick)
@@ -704,8 +737,8 @@ class TurbidityApp(tk.Tk):
             return
         if self.ref_img is None:
 
-            self.ref_img = np.full((360, 480, 3), 128, dtype=np.uint8)
-            self.ref_meta = {"filename": "auto_neutral.png", "width": 480, "height": 360, "format": "PNG"}
+            self.ref_img = np.full((AN_H, AN_W, 3), 128, dtype=np.uint8)
+            self.ref_meta = {"filename": "auto_neutral.png", "width": AN_W, "height": AN_H, "format": "PNG"}
 
         try:
             rows = int(self.v_grid_rows.get().strip() or 12)
@@ -729,7 +762,7 @@ class TurbidityApp(tk.Tk):
             grid_cols=cols,
             grid_rows=rows,
             method=selected_method,
-            target_size=(480, 360)
+            target_size=(AN_W, AN_H)
         )
         self.proc_res = res
 
@@ -855,6 +888,28 @@ class TurbidityApp(tk.Tk):
         self.load_history_table()
         self.refresh_regression_stats()
 
+    def merge_csv_dialog(self):
+        paths = filedialog.askopenfilenames(
+            title="Select experiments.csv file(s) from other data folders to merge",
+            filetypes=[("CSV files", "*.csv")])
+        if not paths:
+            return
+        try:
+            res = data_manager.merge_experiment_csvs(list(paths))
+        except Exception as e:
+            messagebox.showwarning("Merge failed", str(e))
+            return
+        messagebox.showinfo("Merge complete",
+                            f"Added {res['added']} rows to\n{data_manager.CSV_PATH}\n\n"
+                            f"Skipped duplicates: {res['skipped_duplicates']}\n"
+                            f"Renumbered (ID clash): {res['renumbered']}\n\n"
+                            "Rows saved before the ratio columns existed have blank ratio values "
+                            "and are ignored by training.")
+        self.active_exp_id = data_manager.get_next_experiment_id()
+        self.v_exp_id.set(self.active_exp_id)
+        self.load_history_table()
+        self.refresh_regression_stats()
+
     def export_csv_dialog(self):
         dest = filedialog.asksaveasfilename(
             title="Export Experiments CSV Dataset",
@@ -951,87 +1006,145 @@ class TurbidityApp(tk.Tk):
 
             if target == "known_NTU":
                 self.plot_ntu_view.set_image(plot_img)
-                self.lbl_ntu_metrics.config(text=f"R2: {meta['r2']:.3f}  |  RMSE: {meta['rmse']:.2f} NTU  |  MAE: {meta['mae']:.2f}")
+                self.lbl_ntu_metrics.config(text=f"LOO R2: {meta['r2']:.3f}  |  LOO RMSE: {meta['rmse']:.2f} NTU  |  LOO MAE: {meta['mae']:.2f}  |  n={meta['n_samples']}")
             else:
                 self.plot_size_view.set_image(plot_img)
-                self.lbl_size_metrics.config(text=f"R2: {meta['r2']:.3f}  |  RMSE: {meta['rmse']:.2f} µm  |  MAE: {meta['mae']:.2f}")
+                self.lbl_size_metrics.config(text=f"LOO R2: {meta['r2']:.3f}  |  LOO RMSE: {meta['rmse']:.2f} µm  |  LOO MAE: {meta['mae']:.2f}  |  n={meta['n_samples']}")
 
-            messagebox.showinfo("Model Trained", f"Successfully trained {target} regression model!\n\nSamples: {meta['n_samples']}\nR2 Score: {meta['r2']:.3f}\nRMSE: {meta['rmse']:.3f}")
+            messagebox.showinfo("Model Trained", f"Trained {target} model on {meta['n_samples']} samples ({meta['n_levels']} levels).\n\n"
+                                f"Features used: {', '.join(meta['selected'])}\n\n"
+                                f"Out-of-sample (leave-one-out):\n  R2   = {meta['r2']:.3f}\n  RMSE = {meta['rmse']:.3g}  ({meta['rmse_pct_range']:.1f}% of range)\n\n"
+                                f"In-sample (optimistic, for comparison only):\n  R2   = {meta['train_r2']:.3f}\n  RMSE = {meta['train_rmse']:.3g}")
             self._predict_inline()
         except Exception as e:
             messagebox.showwarning("Training Error", str(e))
 
     def _extract_current_features_dict(self):
+        """Ratio features of the current frame, or None when there is no meaningful
+        reference (the auto neutral-grey placeholder gives meaningless ratios)."""
         if self.proc_res is None:
             return None
-        scores = self.proc_res["all_blur_scores"]
-        ref_scores = self.proc_res.get("ref_blur_scores", {})
-        b_s = self.proc_res["blur_stats"]
-        a_s = self.proc_res["angle_stats"]
+        if self.ref_meta is None or self.ref_meta.get("filename") == "auto_neutral.png":
+            return None
+        return data_manager.features_from_proc(self.proc_res)
 
-        return {
-            "laplacian_variance": scores.get("laplacian", 0.0),
-            "tenengrad": scores.get("tenengrad", 0.0),
-            "fft_high_frequency_energy": scores.get("fft", 0.0),
-            "mean_blur": b_s.get("mean", 0.0),
-            "min_blur": b_s.get("min", 0.0),
-            "max_blur": b_s.get("max", 0.0),
-            "median_blur": b_s.get("median", 0.0),
-            "std_blur": b_s.get("std", 0.0),
-            "mean_scattering_angle": a_s.get("mean", 0.0),
-            "min_scattering_angle": a_s.get("min", 0.0),
-            "max_scattering_angle": a_s.get("max", 0.0),
-            "median_scattering_angle": a_s.get("median", 0.0),
-            "std_scattering_angle": a_s.get("std", 0.0),
-            "diff_mean": self.proc_res.get("diff_mean", 0.0),
-            "diff_std": self.proc_res.get("diff_std", 0.0),
-            "ref_laplacian_variance": ref_scores.get("laplacian", 0.0),
-            "ref_tenengrad": ref_scores.get("tenengrad", 0.0),
-            "ref_fft_energy": ref_scores.get("fft", 0.0),
-        }
+    def _fmt_prediction(self, p, unit):
+        if p.get("value") is None:
+            return "--"
+        s = f"{p['value']:.1f} \u00b1 {p['rmse']:.1f} {unit}"
+        return s + " !" if p.get("flags") else s
 
     def _predict_inline(self):
         feats = self._extract_current_features_dict()
         if feats is None:
+            self.v_pred_ntu.set("--")
+            self.v_pred_size.set("--")
+            if self.proc_res is not None:
+                self.v_status.set("No predictions: load a clear-water reference image first.")
             return
 
-        ntu_mod = regression_engine.load_model("known_NTU")
-        if ntu_mod:
-            p = regression_engine.predict_target(ntu_mod, feats)
-            if p.get("value") is not None:
-                self.v_pred_ntu.set(f"{p['value']:.1f} NTU")
-
-        size_mod = regression_engine.load_model("particle_size")
-        if size_mod:
-            p2 = regression_engine.predict_target(size_mod, feats)
-            if p2.get("value") is not None:
-                self.v_pred_size.set(f"{p2['value']:.1f} µm")
+        notes = []
+        for target, var, unit in (("known_NTU", self.v_pred_ntu, "NTU"),
+                                  ("particle_size", self.v_pred_size, "\u00b5m")):
+            mod = regression_engine.load_model(target)
+            if not mod:
+                var.set("--")
+                continue
+            p = regression_engine.predict_target(mod, feats)
+            var.set(self._fmt_prediction(p, unit))
+            if p.get("value") is None:
+                notes.append(f"{target}: {p['status']}")
+            elif p.get("flags"):
+                notes.append(f"{target}: " + "; ".join(p["flags"]))
+        if notes:
+            self.v_status.set("Prediction warning - " + " | ".join(notes))
 
     def predict_current_frame(self):
-        feats = self._extract_current_features_dict()
-        if feats is None:
+        if self.proc_res is None:
             messagebox.showwarning("No Features", "Please capture or load a frame first.")
             return
-
-        ntu_mod = regression_engine.load_model("known_NTU")
-        size_mod = regression_engine.load_model("particle_size")
+        feats = self._extract_current_features_dict()
+        if feats is None:
+            messagebox.showwarning("No Reference", "Load a real clear-water reference image first. "
+                                   "Without it the ratio features, and any prediction, are meaningless.")
+            return
 
         msg = []
-        if ntu_mod:
-            r1 = regression_engine.predict_target(ntu_mod, feats)
-            msg.append(f"Predicted NTU: {r1['value']:.2f} NTU (Model R2: {r1['r2']:.2f})")
-            self.v_pred_ntu.set(f"{r1['value']:.1f} NTU")
-        else:
-            msg.append("NTU Model: Not yet trained. Save >= 3 samples with Known NTU to train.")
-
-        if size_mod:
-            r2 = regression_engine.predict_target(size_mod, feats)
-            msg.append(f"Predicted Particle Size: {r2['value']:.2f} µm (Model R2: {r2['r2']:.2f})")
-            self.v_pred_size.set(f"{r2['value']:.1f} µm")
-        else:
-            msg.append("Particle Size Model: Not yet trained. Save >= 3 samples with Particle Size to train.")
-
+        for target, label, var, unit in (("known_NTU", "NTU", self.v_pred_ntu, "NTU"),
+                                         ("particle_size", "Particle Size", self.v_pred_size, "\u00b5m")):
+            mod = regression_engine.load_model(target)
+            if not mod:
+                msg.append(f"{label} model: not trained yet.")
+                var.set("--")
+                continue
+            p = regression_engine.predict_target(mod, feats)
+            var.set(self._fmt_prediction(p, unit))
+            if p.get("value") is None:
+                msg.append(f"{label}: no prediction. {p['status']}")
+            else:
+                line = (f"{label}: {p['value']:.2f} {unit}  (leave-one-out error \u00b1{p['rmse']:.2f}, "
+                        f"LOO R2 {p['r2']:.2f})")
+                if p["flags"]:
+                    line += "\n  Warning: " + "; ".join(p["flags"])
+                msg.append(line)
         messagebox.showinfo("Regression Predictions", "\n\n".join(msg))
+
+    def calibration_action(self, target="known_NTU"):
+        unit = "NTU" if target == "known_NTU" else (self.v_conc_unit.get().strip() or "")
+        try:
+            cal = calibration.calibration_curve(data_manager.load_experiments(), target)
+        except ValueError as e:
+            messagebox.showwarning("Calibration", str(e))
+            return
+        self.last_calibration = cal
+        self.plot_cal_view.set_image(calibration.render_calibration_plot(cal, 620, 300, unit))
+        self.lbl_cal.config(text=calibration.summary_text(cal, unit))
+        self.v_status.set(f"Calibration curve ({target}): R2={cal['r2']:.3f}, feature {cal['feature']}")
+
+    def noise_floor_action(self):
+        if self.ref_img is None or (self.ref_meta or {}).get("filename") == "auto_neutral.png":
+            messagebox.showwarning("Noise Floor", "Load the clear-water reference image first.")
+            return
+        try:
+            n_avg = max(1, int(self.v_navg.get().strip() or 1))
+        except ValueError:
+            n_avg = 5
+        try:
+            if self.is_camera_running and self.cam is not None:
+                if not messagebox.askyesno("Noise Floor", "Put CLEAR water in the cell, then press Yes.\n"
+                                           f"This captures 10 frames (each averaging {n_avg})."):
+                    return
+                def prog(i, n):
+                    self.v_status.set(f"Noise floor: capturing {i}/{n} ...")
+                    self.update_idletasks()
+                imgs = noise_floor.capture_clear_water(self.cam, 10, n_avg, prog)
+            else:
+                paths = filedialog.askopenfilenames(title="Select >= 3 clear-water images (repeat captures)",
+                                                    filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff")])
+                if not paths:
+                    return
+                imgs = []
+                for p in paths:
+                    im = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if im is not None:
+                        imgs.append(im)
+            feats = noise_floor.features_for_images(self.ref_img, imgs, (AN_W, AN_H))
+            cal = getattr(self, "last_calibration", None)
+            unit = "NTU" if cal and cal["target"] == "known_NTU" else ""
+            summ = noise_floor.summarize(feats, cal, unit)
+        except Exception as e:
+            messagebox.showwarning("Noise Floor", str(e))
+            return
+        path = noise_floor.save_csv(summ)
+        report = noise_floor.format_report(summ) + f"\n\nSaved: {path}"
+        win = tk.Toplevel(self)
+        win.title("Noise floor / repeatability")
+        win.configure(bg=W.BG)
+        txt = tk.Text(win, bg=W.CARD, fg=W.TEXT, font=(W.FONT_MONO, 9), width=118, height=32, wrap="none")
+        txt.pack(fill="both", expand=True, padx=8, pady=8)
+        txt.insert("1.0", report)
+        txt.config(state="disabled")
+        self.v_status.set(f"Noise floor done ({summ['n']} captures). Saved {os.path.basename(path)}")
 
     def _on_close(self):
         if self.cam is not None:
